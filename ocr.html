@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simple OCR（スクショ→英単語）</title>
+  <style>
+    body{ margin:0; background:#0f1020; color:#e7e9ff; font-family:system-ui,-apple-system,"Noto Sans JP",sans-serif; display:flex; justify-content:center; padding:18px;}
+    .app{ width:min(980px,100%); background:rgba(20,22,40,.70); border:1px solid rgba(255,255,255,.12); border-radius:22px; overflow:hidden; box-shadow:0 18px 60px rgba(0,0,0,.55); }
+    header{ padding:16px 18px; border-bottom:1px solid rgba(255,255,255,.12); display:flex; justify-content:space-between; align-items:center; gap:12px;
+      background:linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.02)); }
+    .title{ display:flex; align-items:center; gap:10px; font-weight:900;}
+    .dot{ width:14px; height:14px; border-radius:4px; background:#ff3b30; box-shadow:0 0 0 3px rgba(255,59,48,.15); }
+    main{ padding:18px; display:grid; gap:14px; }
+    .card{ background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12); border-radius:18px; padding:16px; }
+    .row{ display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    button, input, select, textarea{
+      background: rgba(255,255,255,.07);
+      border:1px solid rgba(255,255,255,.16);
+      color:#e7e9ff;
+      border-radius:14px;
+      padding:10px 12px;
+      font-weight:800;
+      font-size:14px;
+    }
+    button{ cursor:pointer; }
+    button:hover{ background: rgba(255,255,255,.10); }
+    button:disabled{ opacity:.5; cursor:not-allowed; }
+    .pill{ display:inline-flex; gap:8px; align-items:center; padding:8px 12px; border-radius:999px; border:1px solid rgba(255,255,255,.14); background:rgba(255,255,255,.06); font-weight:900;}
+    .tiny{ font-size:12px; opacity:.78; line-height:1.5; }
+    textarea{ width:100%; min-height:160px; resize:vertical; font-weight:700; }
+    .ok{ color:#7CFFB2; font-weight:900; }
+    .warn{ border:1px solid rgba(255,200,80,.35); background: rgba(255,200,80,.10); padding:10px 12px; border-radius:14px; font-weight:850; }
+    .mono{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="title"><span class="dot"></span><span>Simple OCR（スクショ→英単語）</span></div>
+    <span class="pill">状態: <span id="status">待機中</span></span>
+  </header>
+
+  <main>
+    <div class="card">
+      <div class="row">
+        <span class="pill"><span class="ok">✅ JS起動OK</span></span>
+        <span class="pill">環境: <span id="env"></span></span>
+      </div>
+
+      <div id="hintFile" class="warn tiny" style="margin-top:10px; display:none;">
+        いま <span class="mono">file:///</span> で開いています（PCのローカルファイル直開き）。<br>
+        この状態だとOCRが止まりやすいので、Wixに貼って（https）開いてください。
+      </div>
+
+      <div class="row" style="margin-top:12px;">
+        <input id="file" type="file" accept="image/*" multiple>
+        <button id="btnOCR">OCRする</button>
+        <button id="btnClear">クリア</button>
+        <span class="pill">選択: <span id="count">0</span> 枚</span>
+      </div>
+
+      <div class="tiny" style="margin-top:10px;">
+        ✅ まずここで「OCRする」を押した瞬間に <b>状態が準備中</b> になればOK。<br>
+        ならない場合、Wix側でスクリプトが動いていません（埋め込み方法の問題の可能性大）。
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:space-between;">
+        <div style="font-weight:950;">ログ（動作確認用）</div>
+        <button id="btnCopyLog">ログをコピー</button>
+      </div>
+      <textarea id="log" placeholder="ここにログが出ます"></textarea>
+    </div>
+
+    <div class="card">
+      <div style="font-weight:950;">OCR結果（英単語抽出）</div>
+      <textarea id="out" placeholder="ここに結果が出ます"></textarea>
+    </div>
+  </main>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+<script>
+  const elStatus = document.getElementById("status");
+  const elEnv = document.getElementById("env");
+  const elHintFile = document.getElementById("hintFile");
+  const elFile = document.getElementById("file");
+  const elCount = document.getElementById("count");
+  const elLog = document.getElementById("log");
+  const elOut = document.getElementById("out");
+
+  function log(msg){
+    elLog.value += msg + "\\n";
+    elLog.scrollTop = elLog.scrollHeight;
+    console.log(msg);
+  }
+  function setStatus(s){ elStatus.textContent = s; log("STATUS: " + s); }
+
+  elEnv.textContent = location.protocol + "//" + location.host;
+
+  if(location.protocol === "file:") elHintFile.style.display = "block";
+
+  elFile.addEventListener("change", ()=>{
+    const n = (elFile.files ? elFile.files.length : 0);
+    elCount.textContent = String(n);
+    log("FILES SELECTED: " + n);
+  });
+
+  function extractEnglishWords(text){
+    const lines = (text || "").replace(/\\u00A0/g," ").split(/\\r?\\n/).map(s=>s.trim()).filter(Boolean);
+    const out = [];
+    const blacklist = new Set(["missed","words","review","simple","ocr"]);
+    for(const line of lines){
+      const matches = line.match(/[A-Za-z][A-Za-z'’-]{2,}/g);
+      if(!matches) continue;
+      for(const raw of matches){
+        const w = raw.trim().toLowerCase().replace(/[^a-z'’-]/g,"");
+        if(!w || blacklist.has(w)) continue;
+        out.push(w);
+      }
+    }
+    return [...new Set(out)];
+  }
+
+  async function runOCR(files){
+    setStatus("準備中…（ここが出ないならJSが動いてません）");
+    if(!files || !files.length){
+      alert("画像を選んでください");
+      setStatus("待機中");
+      return;
+    }
+
+    // ここでTesseractが居なければ、外部スクリプトがブロックされています
+    if(!window.Tesseract){
+      alert("Tesseract.js が読み込めませんでした（Wixが外部スクリプトを止めている可能性）。");
+      setStatus("エラー（Tesseract未ロード）");
+      return;
+    }
+
+    setStatus("Tesseract起動中…");
+
+    const worker = await Tesseract.createWorker({
+      logger: m=>{
+        if(m.status){
+          const pct = (m.progress!=null) ? ` ${(m.progress*100).toFixed(0)}%` : "";
+          setStatus(m.status + pct);
+        }
+      },
+      workerPath: "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js",
+      corePath: "https://cdn.jsdelivr.net/npm/tesseract.js-core@5.0.0/tesseract-core.wasm.js",
+      langPath: "https://cdn.jsdelivr.net/npm/tesseract.js-data@4.0.0/",
+    });
+
+    try{
+      await worker.loadLanguage("eng");
+      await worker.initialize("eng");
+
+      let full = "";
+      for(let i=0;i<files.length;i++){
+        setStatus(`OCR中 (${i+1}/${files.length})…`);
+        const { data } = await worker.recognize(files[i]);
+        full += "\\n" + (data.text || "");
+      }
+
+      const words = extractEnglishWords(full);
+      elOut.value = words.join("\\n");
+      setStatus("完了");
+      log("FOUND WORDS: " + words.length);
+
+    }catch(e){
+      console.error(e);
+      log("ERROR: " + e.message);
+      alert("OCRでエラーが出ました。ログをコピーして送ってください。");
+      setStatus("エラー");
+    }finally{
+      try{ await worker.terminate(); }catch(e){}
+    }
+  }
+
+  document.getElementById("btnOCR").addEventListener("click", async ()=>{
+    const files = elFile.files ? [...elFile.files] : [];
+    log("CLICK OCR. files=" + files.length);
+    await runOCR(files);
+  });
+
+  document.getElementById("btnClear").addEventListener("click", ()=>{
+    elFile.value = "";
+    elCount.textContent = "0";
+    elOut.value = "";
+    elLog.value = "";
+    setStatus("待機中");
+  });
+
+  document.getElementById("btnCopyLog").addEventListener("click", async ()=>{
+    try{
+      await navigator.clipboard.writeText(elLog.value || "");
+      alert("ログをコピーしました");
+    }catch(e){
+      alert("コピーできませんでした（ブラウザの制限）。ログを手で選択してコピーしてください。");
+    }
+  });
+
+  log("BOOT OK");
+</script>
+</body>
+</html>
